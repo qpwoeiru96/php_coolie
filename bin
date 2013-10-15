@@ -1,0 +1,4 @@
+#!/usr/bin/env php
+<?php
+include 'Coolie.php';
+Coolie\Coolie::run();
