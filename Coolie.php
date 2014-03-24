@@ -6,176 +6,213 @@
  *
  * @package Coolie
  * @author  qpwoeiru96 <qpwoeiru96@gmail.com>
- * @date 2013-07-18 16:25:42
- * @copyright WWW.DFWSGROUP.COM
- * @version 0.3.0 <beta>
+ * @version 0.4.0
  */
+
 namespace Coolie;
 
-class Coolie {
-    
-    const PACKAGE  = 'Coolie';
-    
-    const VERSION  = '0.3.0';
-    
-    const BASEPATH = __DIR__;
-    
-    public $configFile = '';
-
-    private static $_configHandler = NULL;
-    
-    private static $_instance      = NULL;
-
-    private static $_factoryPID    = -1;
+/**
+ * Class Coolie
+ *
+ * @package Coolie
+ * @property Config $config
+ */
+class Coolie
+{
+    /**
+     * @var string
+     */
+    const PACKAGE = 'Coolie';
 
     /**
-     * 日志记录者的映射(因为多进程 有多个日志记录者)
-     * 
-     * @var array
+     * @var int
      */
-    private static $_loggerMap     = array();
+    const VERSION_MAJOR = 0;
 
+    /**
+     * @var int
+     */
+    const VERSION_MINOR = 4;
+
+    /**
+     * @var int
+     */
+    const VERSION_MICRO = 0;
+
+    /**
+     * @var bool
+     */
+    public static $loaded = false;
+
+    /**
+     * @var null|Coolie
+     */
+    private static $_instance;
+
+    /**
+     * @var bool
+     */
+    private $_isRunning = false;
+
+    /**
+     * @var Config
+     */
+    private $_config;
+
+    /**
+     * @var int
+     */
+    private $_childProcessId;
+
+    /**
+     * @var Logger
+     */
+    private $_logger;
+
+    /**
+     * @return Coolie
+     */
     private function __construct()
     {
-        spl_autoload_register(array(__CLASS__, 'autoload'));
-
-        define('COOLIE_DEBUG', !!self::config()->get('Coolie.debug'));
-
-        if(COOLIE_DEBUG) error_reporting(E_ALL);
-        else error_reporting(0);
-
-        self::setConsoleTitle('Coolie');
-
-        //pcntl_signal(SIGTERM, array($this, "signalHandler"));
-        //pcntl_signal(SIGINT, array($this, "signalHandler"));
-        //pcntl_signal(SIGQUIT, array($this, "signalHandler"));
+        self::setConsoleTitle((string)$this);
     }
 
     /**
-     * 信号处理
-     *
-     * 关于如何关闭僵尸子进程的问题
      * 
-     * @see http://stackoverflow.com/questions/9976441/terminating-zombie-child-processes-forked-from-socket-server
-     * @param  integer $signo 信号量
-     * @return void
+     * @return Coolie
      */
-    public function signalHandler($signo)
-    {
-
-        //必须的
-        declare(ticks = 1);
-
-        switch ($signo) {
-            
-            case SIGQUIT:
-            case SIGINT:
-            case SIGTERM:
-                posix_kill(self::$_factoryPID, $signo);
-                exit(0);
-
-        }
-
-    }
-
-
-    public function __clone()
-    {
-        trigger_error('clone is not allowed.', E_USER_ERROR);
-    }
-
     public static function getInstance()
     {
-        if(self::$_instance === NULL)
+        if(self::$_instance === null)
             self::$_instance = new self;
 
         return self::$_instance;
     }
 
-
     /**
-     * 获取配置操作器
-     * 
-     * @return Coolie\Config
+     * initial environment
+     *
+     * @param string $configFile
+     * @return Coolie
      */
-    public static function config()
+    public static function load($configFile)
     {
-        if(self::$_configHandler === NULL)
-            self::$_configHandler = new Config(__DIR__ . '/config.ini');
+        if(self::$loaded)
+            trigger_error('coolie already loaded.', E_USER_ERROR);
 
-        return self::$_configHandler;
+        
+        error_reporting(0);
+        ini_set('display_errors', 'Off');
+        date_default_timezone_set("Asia/Shanghai");
+
+        spl_autoload_register([__CLASS__, 'autoload']);
+
+        $instance          = self::getInstance();
+        $instance->_config = new Config($configFile);
+
+        define('COOLIE_DEBUG', (boolean)$instance->config->get('Coolie.debug'));
+
+        if($instance->config->get('Coolie.check_requirement'))
+            Requirement::check();
+
+
+        $logStorager = $instance->config->get('Coolie.log_storager');
+
+        if($logStorager)
+            $instance->_logger = new Logger($logStorager);
+
+        
+
+        $instance->preload();
+
+        self::$loaded = true;
+
+        return $instance;
     }
 
-    /**
-     * 获取到Logger
-     * 
-     * @return Coolie\Logger
-     */
-    public static function logger($source)
-    {
-        if( !isset($_loggerMap[$source]) )
-            $_loggerMap[$source] = new Logger($source);
 
-        return $_loggerMap[$source];
-    }
 
     /**
-     * 运行
-     * 
+     * preload some php file
+     *
      * @return void
      */
-    public static function run()
+    public function preload()
+    {
+        $fileList = (string)$this->config->get('Coolie.preload');
+
+        if($fileList === '') return ;
+
+        $configDir = dirname(realpath($this->config->filePath));
+        $fileList  = explode('|', str_replace('__DIR__', $configDir, $fileList));
+
+        foreach($fileList as $file) {
+
+            if(!file_exists($file))
+                trigger_error('preload file ' . $file . ' is not exists,', E_USER_ERROR);
+            include $file;
+        }
+    }
+
+    /**
+     * 
+     * @param  string|mixed $message
+     * @param  string $level
+     * @param  string $category
+     * @param  int $task
+     * @return void
+     */
+    public function log($message, $level = Logger::LEVEL_INFO, $category = 'Coolie', $task = 0)
     {
 
-        /**
-         * 首先初始化
-         */
-        self::getInstance();
+        if($this->_logger)
+            $this->_logger->log(is_string($message) ? $message : json_encode($message), $level, $category, $task);
+    }
+
+
+    /**
+     * @return void
+     */
+    public function run()
+    {
+        if($this->_isRunning)
+            trigger_error('coolie is already running.', E_USER_ERROR);
 
         $pid = pcntl_fork();
-        //父进程和子进程都会执行下面代码
 
         if ($pid == -1) {
-            //错误处理：创建子进程失败时返回-1.
-            die('could not fork');
+            exit('could not fork child process.');
+
         } else if ($pid) {
-
-            //父进程会得到子进程号，所以这里是父进程执行的逻辑
             
-            self::$_factoryPID = $pid;
+            $this->_childProcessId = $pid;
 
-            //等待子进程中断，防止子进程成为僵尸进程。        
             pcntl_wait($status);
 
-            //如果子进程中断 那么重新执行子进程
+            $this->_isRunning = false;
             if($status) self::run();
-            else exit(0);         
 
         } else {
 
-            /**
-             * 设置子进程的UID 跟 GID 加强安全
-             */
-            self::setUid();
-            self::setGid();
-
-            //子进程得到的$pid为0, 所以这里是子进程执行的逻辑。
+            $this->setUID();
+            $this->setGID();
             Factory::getInstance()->run();
         }
 
+        $this->_isRunning = true;
     }
 
+
     /**
-     * 设置子进程的GID
+     * set child process group id
      *
      * @return  void
      */
-    public static function setGid()
+    public function setGID()
     {
-        $groupName = self::config()->get('Coolie.group');
+        $groupName = $this->config->get('Coolie.group');
 
         if($groupName) {
-
             $groupInfo = posix_getgrnam($groupName);
             if(is_array($groupInfo) && isset($groupInfo['gid'])) {
                 posix_setgid($groupInfo['gid']);
@@ -184,16 +221,15 @@ class Coolie {
     }
 
     /**
-     * 设置子进程的UID(防止任务提权)
+     * set child process user id
      *
      * @return  void
      */
-    public static function setUid()
+    public function setUID()
     {
-        $userName = self::config()->get('Coolie.user');
+        $userName = $this->config->get('Coolie.user');
 
         if($userName) {
-
             $userInfo = posix_getpwnam($userName);
             if(is_array($userInfo) && isset($userInfo['uid'])) {
                 posix_setuid($userInfo['uid']);
@@ -202,106 +238,34 @@ class Coolie {
     }
 
     /**
-     * 获取依赖数组
-     * 
-     * @return array
-     */
-    private static function getRequirements()
-    {
-        return array(
-            array(
-                'name'    => 'PHP SAPI',
-                'result'  => (bool)stristr(PHP_SAPI, 'CLI'),
-                'message' => '',
-                'value'   => PHP_SAPI,
-                'level'   => 'error'
-            ),
-            array(
-                'name'    => 'Linux Operating System',
-                'result'  => (bool)stristr(PHP_OS, 'LINUX'),
-                'message' => '',
-                'value'   => php_uname(),
-                'level'   => 'error'
-            ),
-            array(
-                'name'    => 'PHP Version >= 5.3.0',
-                'result'  =>  version_compare(PHP_VERSION, '5.3.0') >= 0,
-                'message' => 'php version at least PHP 5.3.0',
-                'value'   => PHP_VERSION,
-                'level'   => 'error'
-            ),
-            array(
-                'name'    => 'extension pcntl',
-                'result'  => extension_loaded('pcntl'),
-                'message' => '',
-                'value'   => extension_loaded('pcntl'),
-                'level'   => 'error'
-            ),
-            array(
-                'name'    => 'extension posix',
-                'result'  => extension_loaded('posix'),
-                'message' => '',
-                'value'   => extension_loaded('posix'),
-                'level'   => 'error'
-            ),
-            array(
-                'name'    => 'extension sockets',
-                'result'  => extension_loaded('sockets'),
-                'message' => '',
-                'value'   => extension_loaded('sockets'),
-                'level'   => 'error'
-            ),
-            array(
-                'name'    => 'function cli_set_process_title',
-                'result'  => function_exists('cli_set_process_title'),
-                'message' => '',
-                'value'   =>  function_exists('cli_set_process_title'),
-                'level'   => 'warnging'
-            )
-        );
-    }
-
-    /**
-     * 分析依赖是否满足
+     * get coolie version string
      *
-     * @todo 
-     * @return void
+     * @return string
      */
-    public static function checkRequirement() {
-
-        $data = self::getRequirements();
-        foreach($data as $val) {}
-    }
-
-    /**
-     * 输出依赖信息
-     * 
-     * @todo
-     * @return [type] [description]
-     */
-    public static function printMessage()
+    public static function getVersion()
     {
+        return implode('.', [self::VERSION_MAJOR, self::VERSION_MINOR, self::VERSION_MICRO]);
     }
 
     /**
-     * 输出在控制台的LOG
+     * print console log
      * 
      * @return void
      */
     public static function printConsoleLog()
     {        
-        if(COOLIE_DEBUG) {
+        if(defined('COOLIE_DEBUG') && COOLIE_DEBUG) {
             $args = func_get_args();
-            array_unshift($args, "[" . time() . "][%d] %s: %s \n");
+            array_unshift($args, "[" . date('Y-m-d H:i:s.') . substr((microtime(1) * 10000), -4, 4) . "][%d] %s: %s \n");
             print call_user_func_array('sprintf', $args);
         }
     }
 
     /**
-     * 设置控制台标题
+     * set console title
      * 
      * @param string $title
-     * @return  void
+     * @return void
      */
     public static function setConsoleTitle($title) 
     {
@@ -310,12 +274,8 @@ class Coolie {
         }
     }
 
-
-
     /**
-     * Class AutoLoad
-     * 
-     * 此加载器只是负责Coolie的相关模块的加载
+     * class loader of coolie
      * 
      * @param  string $className
      * @return boolean
@@ -327,8 +287,42 @@ class Coolie {
 
         $className = ltrim(ltrim($className, self::PACKAGE), '\\');
         $path      = implode(DIRECTORY_SEPARATOR, explode('\\', $className)) . '.php';
-        $path      = self::BASEPATH . DIRECTORY_SEPARATOR . $path;
+        $path      = __DIR__ . DIRECTORY_SEPARATOR . $path;
+
         if(file_exists($path) && is_readable($path)) include($path);
+
         return class_exists($className, false) || interface_exists($className, false);
     }
+
+    /**
+     *
+     * 
+     * @param  string $name
+     * @return mixed
+     */
+    public function __get($name)
+    {
+        if($name === 'config')
+            return $this->_config;
+
+        return null;
+    }
+
+    /**
+     * @return void
+     */
+    public function __clone()
+    {
+        trigger_error('clone is not allowed.', E_USER_ERROR);
+    }
+
+    /**
+     * @return string
+     */
+    public function __toString()
+    {
+        return "Coolie " . self::getVersion();
+    }
 }
+
+Coolie::load(__DIR__ . '/config.ini')->run();

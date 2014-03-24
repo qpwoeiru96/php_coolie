@@ -1,143 +1,211 @@
 <?php
 namespace Coolie;
 
-include "pheanstalk.phar";
-
-class Provider
+class Provider implements ProviderInterface
 {
 
+    /**
+     * @var  int
+     */
     const RECONNECT_INTERVAL = 60;
-    
-    /**
-     * 任务完成 会删除队列中的任务
-     */
-    const STATUS_COMPELETE = 1;
-    
-    /**
-     * 任务重试(重做) 任务会重新回到队列等待读取
-     */
-    const STATUS_RETRY     = 2;
-    
-    /**
-     * 任务失败 隐藏队列中的任务(人为控制)
-     */
-    const STATUS_FAILED    = 3;
-    
-    /**
-     * 任务出错 隐藏队列中的任务(系统捕获)
-     */
-    const STATUS_ERROR     = 4;
 
     /**
-     * 任务出错 处理之前 由系统捕获的任务(比如数据包格式不正确)
+     * @var string
      */
-    const STATUS_WRONG     = 5;
+    private $_conn;
 
-    private $_transporter;
-    
+    /**
+     * @var null|mixed
+     */
+    private $_vender;
+
+    /**
+     * @var string
+     */
     private $_host;
-    
+
+    /**
+     * @var int
+     */
     private $_port;
-    
+
+    /**
+     * @var string
+     */
     private $_tube;
 
-    public function __construct($host = 'localhost', $port = '11300', $tube = 'task')
+    /**
+     * @var array
+     */
+    private $_reportPool = [];
+
+    /**
+     * @param string $conn
+     */
+    public function __construct($conn)
     {
-        $this->_host        = $host;
-        $this->_port        = $port;            
-        $this->_tube        = $tube;
-        $this->_transporter = new \Pheanstalk_Pheanstalk($this->_host, $this->_port);
+
+        $this->_conn = $conn;
+        preg_match('#([\d\.]+):(\d+)\|([\w\d-_]+)#', $conn, $matches);
+        list(, $host, $port, $tube) = $matches;
+
+        $this->_port = $port;
+        $this->_host = $host;
+        $this->_tube = $tube;
+
+        Coolie::printConsoleLog(posix_getpid(), __CLASS__, "Provider connection is: {$host}:{$port}|{$tube}");
+
+        $this->_vender = new \Pheanstalk_Pheanstalk($this->_host, $this->_port);
     }
 
+    /**
+     * @return Task
+     */
     public function getTask()
     {
-        $task = NULL;        
+        $task = null;
 
         do {
 
             try {
-                $job = $this->_transporter->watch($this->_tube)->reserve();
-            } catch (\Exception $e) { //include Pheanstalk_Exception_ConnectionException
+
+                $job = $this->_vender
+                    ->watch($this->_tube)
+                    ->ignore('default')
+                    ->reserve();
+
+            } catch (\Pheanstalk_Exception_ConnectionException $e) {
+
+                Coolie::printConsoleLog(posix_getpid(), __CLASS__, 'Connect beanstalkd failed. retry after ' . self::RECONNECT_INTERVAL . ' seconds');
+
+                sleep(self::RECONNECT_INTERVAL);
+                continue;
+
+            } catch (\Exception $e) {
+
                 Coolie::printConsoleLog(posix_getpid(), __CLASS__, json_encode(array(
-                    'exception_message'  => $e->getMessage(),
-                    'exception_number'  => $e->getCode()
+                    'message'  => $e->getMessage(),
+                    'code'  => $e->getCode()
                 )));
+
                 sleep(self::RECONNECT_INTERVAL);
                 continue;
             }
 
             if( !($job instanceOf \Pheanstalk_Job) ) {
-                if(COOLIE_DEBUG) {
-                    print '[' . posix_getpid() . '] '. __CLASS__ . ': Not A Valid Pheanstalk Job' . PHP_EOL;
-                }
+                Coolie::printConsoleLog(posix_getpid(), __CLASS__, 'not a valid pheanstalk job');
                 continue;
             }
 
-
             try {
-                $task = new Task($job);
-            } catch (TaskFormatException $e) {
+
+                $data = self::parseJobData($job);
+                $task = Task::create($data['id'], $data['worker'], $data['action'], $data['production']);
+
+            } catch (Exception\TaskFormat $e) {
+
                 Coolie::printConsoleLog(posix_getpid(), __CLASS__, json_encode(array(
-                    'exception_message'  => $e->getMessage(),
-                    'exception_number'  => $e->getCode()
+                    'message'  => $e->getMessage(),
+                    'code'  => $e->getCode()
                 )));
+
                 $this->reportTask($job->getId(), self::STATUS_WRONG);
+
             } catch (\Exception $e) {
+
                 Coolie::printConsoleLog(posix_getpid(), __CLASS__, json_encode(array(
-                    'exception_message'  => $e->getMessage(),
-                    'exception_number'  => $e->getCode()
+                    'message'  => $e->getMessage(),
+                    'code'  => $e->getCode()
                 )));
+
                 $this->reportTask($job->getId(), self::STATUS_WRONG);
             }
 
         } while( !($task instanceOf Task) );
 
-        Coolie::logger('Provider')->log($task, 'trace', 'Coolie.Provider.FetchTask');
-        
         return $task;
-        
-    }
-    
-    public static function printStatus($status)
-    {
-        $list = array('undefined', 'compelete', 'need retry', 'failed', 'error', 'wrong');
-        return (1 <= $status && 5 >= $status) ? $list[$status] : $list[0];
     }
 
     /**
-     *  反馈任务执行信息
+     * parse job data
      *
-     * @param  [type] $jobId  [description]
-     * @param  [type] $status [description]
-     * @return [type]         [description]
+     * @param \Pheanstalk_Job $job
+     * @throws Exception\TaskFormat
+     * @return array
      */
-    public function reportTask($taskId, $status = self::STATUS_COMPELETE)
+    public static function parseJobData(\Pheanstalk_Job $job)
+    {
+
+        $id   = $job->getId();
+        $data = json_decode($job->getData(), 1);
+
+        if(!is_array($data))
+            throw new Exception\TaskFormat('data is not a valid json format.', 0);
+
+        $command = isset($data['command']) ? $data['command'] : '';
+
+        @list($worker, $action) = array_map('trim', explode('.', $command));
+
+        if($worker === '' || $action === '')
+            throw new Exception\TaskFormat('command is empty.', 0);
+
+        $production = isset( $data['production'] ) ? $data['production'] : array();
+
+        return compact('id', 'worker', 'action', 'production');
+    }
+
+    /**
+     * print job status
+     * 
+     * @param  int $status
+     * @return string
+     */
+    public static function printStatus($status)
+    {
+        $list = array('undefined', 'complete', 'need retry', 'failed', 'error', 'wrong');
+        return (1 <= $status && 5 >= $status) ? $list[$status] : $list[0];
+    }
+
+    public function isReported($id)
+    {
+        return $id ? isset($this->_reportPool[$id]) : true;
+    }
+    
+    public function setReported($id)
+    {
+        $this->_reportPool[$id] = true;
+    }
+
+    /**
+     *
+     */
+    public function reportTask($id, $status = self::STATUS_COMPLETE)
     {
 
         try {
 
-            $job = $this->_transporter->watch($this->_tube)->peek($taskId);
+            $job = $this->_vender->watch($this->_tube)->peek($id);
             
         } catch (\Exception $e) {
 
             Coolie::printConsoleLog(posix_getpid(), __CLASS__, json_encode(array(
-                'exception_message'  => $e->getMessage(),
-                'exception_number'  => $e->getCode()
+                'message'  => $e->getMessage(),
+                'code'  => $e->getCode()
             )));
-            return FALSE;
+
+            return false;
         }
 
-        $reportData = array(
-            'id'     => $taskId,
+        $reportData = [
+            'id'     => $id,
             'status' => self::printStatus($status),
             'memory' => memory_get_peak_usage(1),
-            'time'   => defined('COOLIE_TASK_TIME_START') 
-                ? (microtime(1) - COOLIE_TASK_TIME_START) * 1000
-                : 0
-        );
+            'time'   => Workshop::getTimer($id) ? (microtime(1) - Workshop::getTimer($id)) * 1000 : 0
+
+        ];
         
-        Coolie::printConsoleLog(posix_getpid(), __CLASS__, 'Task ' .  $taskId . ' Status is ' . self::printStatus($status));
-        Coolie::logger('provider')->log(json_encode($reportData), 'trace', 'Coolie.Provider.Info');
+        Coolie::printConsoleLog(posix_getpid(), __CLASS__, 'Task ' .  $id . ' status is ' . self::printStatus($status));
+        Coolie::getInstance()->log(json_encode($reportData), 'trace', 'Coolie.Provider.Report.Info', $id);
 
         try {
             
@@ -145,75 +213,32 @@ class Provider
                                 
                 case self::STATUS_FAILED:
                 case self::STATUS_ERROR:
-                    $this->_transporter->watch($this->_tube)->bury($job);
-                    return TRUE;
+                    $this->_vender->watch($this->_tube)->bury($job);
+                    break;
                     
                 case self::STATUS_RETRY:
-                    return TRUE;
+                    break;
                   
                 case self::STATUS_WRONG:
-                case self::STATUS_COMPELETE:
+                case self::STATUS_COMPLETE:
                 default:
-                    $this->_transporter->watch($this->_tube)->delete($job);
-                    return TRUE;
+                    $this->_vender->watch($this->_tube)->delete($job);
+                    break;
             }
 
+            $this->setReported($id);
+
+            return true;
+
         } catch (\Exception $e) {
+
             Coolie::printConsoleLog(posix_getpid(), __CLASS__, json_encode(array(
-                'exception_message'  => $e->getMessage(),
-                'exception_number'  => $e->getCode()
+                'message'  => $e->getMessage(),
+                'code'  => $e->getCode()
             )));
+
             //if($job instanceOf Pheanstalk_Job) $this->_transporter->watch($this->_tube)->delete($job);
-            return FALSE; 
-        }        
+            return false; 
+        }
     }
 }
-
-class Task 
-{
-    private $_id;
-    
-    private $_worker;
-    
-    private $_action;
-    
-    private $_production;
-
-    public function __construct(\Pheanstalk_Job $job)
-    {
-        $this->_id = $job->getId();
-        $data = json_decode($job->getData(), 1);
-
-        if(!is_array($data))
-            throw new TaskFormatException('wrong task format', 0);
-
-        $command = isset($data['command']) ? $data['command'] : '';
-
-        list($this->_worker, $this->_action) = array_map('trim', explode('.', $command));
-
-        if($this->_worker === '' || $this->_action === '')
-            throw new TaskFormatException('wrong task format', 0);
-
-        $this->_production = isset( $data['production'] ) ? $data['production'] : array();
-
-    }
-
-    public function __toString()
-    {
-        return json_encode(array(
-            'id'         => $this->_id,
-            'worker'     => $this->_worker,
-            'action'     => $this->_action,
-            'production' => $this->_production
-        ));
-    }
-
-    public function __get($name)
-    {
-        $name = '_' . $name;
-        return isset($this->$name) ? $this->$name : NULL; 
-    }
-
-}
-
-class TaskFormatException extends \Exception {}

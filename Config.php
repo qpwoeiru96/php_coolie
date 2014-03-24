@@ -1,77 +1,97 @@
 <?php
 namespace Coolie;
 
+/**
+ * Class Config
+ * @package Coolie
+ * @property string $filePath
+ */
 class Config
 {
+
     /**
-     * 配置存放容器
+     * store config
+     *
      * @var array
      */
     private $_config;
 
     /**
-     * 配置文件路径
+     * config file
+     *
      * @var string
      */
-    private $_configFile;
+    private $_filePath;
 
-    public function __construct($configFile)
+    /**
+     *
+     * @param string $filePath
+     * @return Config
+     */
+    public function __construct($filePath)
     {
-        if(!is_file($configFile) || !is_readable($configFile))
-            trigger_error('config file not valid', E_USER_ERROR);
+        $this->_filePath = $filePath;
 
-        $this->_configFile = $configFile;
         $this->_parseConfig();
     }
 
     /**
-     * 分析配置文件
-     * 
+     * parse config file
+     *
      * @return void
      */
-    private function _parseConfig() 
+    private function _parseConfig()
     {
-        $this->_config = parse_ini_file($this->_configFile, TRUE);
+        if(!is_file($this->_filePath) || !is_readable($this->_filePath))
+            trigger_error( $this->_filePath . ' is not a valid config file.');
+
+        $this->_config = @parse_ini_file($this->_filePath, TRUE);
     }
-    
+
+    /**
+     * reload config file
+     *
+     * @return void
+     */
+    public function reload()
+    {
+        $this->_parseConfig();
+    }
+
+    /**
+     * get config item by name
+     *
+     * @param  string $name
+     * @return null|string
+     */
     public function get($name) {
 
         $c = $this->_config;
 
         if(strpos($name, '.') === FALSE)
-            return isset($c[$name]) ? $c[$name] : NULL;
+            return isset($c[$name]) ? $c[$name] : null;
 
-        $arr = explode('.', $name);        
+        $arr = explode('.', $name);
 
         foreach($arr as $val) {
-            if( isset($c[$val]) ) $c = $c[$val];
-            else return NULL;
+            if(isset($c[$val])) $c = $c[$val];
+            else return null;
         }
 
         return $c;
     }
 
+    /**
+     * @see Config::get
+     *
+     * @param  string $name
+     * @return null|string
+     */
     public function __get($name) {
-        
+
+        if($name === 'filePath') return $this->_filePath;
+
         return $this->get($name);
-    }
-
-    public function getBeanstalkConfigByIndex($index)
-    {
-        $config = $this->get('Workshop');
-
-        $singleConfig = isset($config['index_' . $index]) ? $config['index_' . $index]
-            : (isset($config['default']) ? $config['default'] : trigger_error("config not valid", E_USER_ERROR));
-
-       return self::parseBeanstalkConfig($singleConfig);
-
-    }
-
-    public static function parseBeanstalkConfig($str)
-    {
-        preg_match('/^([0-9\.]+):(\d+)\|(\w+)$/', $str, $matches);
-        list(, $host, $port, $tube) = $matches;
-        return compact('host', 'port', 'tube');        
     }
 
 }

@@ -1,17 +1,22 @@
 <?php
 namespace Coolie;
 
+/**
+ * Class Dispatcher
+ * @package Coolie
+ */
 class Dispatcher
 {
+
     const DIR = 'Worker';
 
     private static $_instance = NULL;
 
     private static $_workerMap = array();
 
-    private function __construct() 
+    private function __construct()
     {
-        
+
     }
 
     public function __clone()
@@ -33,22 +38,17 @@ class Dispatcher
 
         $worker = $instance->loadWorker($task->worker);
 
-        if(!$worker) return Provider::STATUS_WRONG;
+        if(!$worker) return ProviderInterface::STATUS_WRONG;
 
         if(!method_exists($worker, $task->action) || !is_callable(array($worker, $task->action))) {
-            return Provider::STATUS_WRONG;
+            return ProviderInterface::STATUS_WRONG;
         }
 
-        //try {
-            return call_user_func(array($worker, $task->action), $task->production); 
-        //} catch (\Exception $e) {
-        //    return Provider::STATUS_ERROR;
-        //}
-
+        return call_user_func(array($worker, $task->action), $task->production);
     }
 
     /**
-     * 
+     *
      */
     private function loadWorker($workerName)
     {
@@ -57,7 +57,7 @@ class Dispatcher
         $filePath = __DIR__ . DIRECTORY_SEPARATOR . 'Worker' . DIRECTORY_SEPARATOR . $workerName . '.php';
 
         if( !file_exists($filePath) ) {
-            return FALSE;
+            return false;
         }
 
         include($filePath);
@@ -65,11 +65,14 @@ class Dispatcher
         $className = __NAMESPACE__ . '\\' . self::DIR . '\\' . $workerName;
 
         if(!class_exists($className)) {
-            return FALSE;
+            return false;
         }
 
         self::$_workerMap[$workerName] = new $className;
 
         return self::$_workerMap[$workerName];
     }
+
+
+
 }
