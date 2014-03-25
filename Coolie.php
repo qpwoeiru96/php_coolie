@@ -193,9 +193,10 @@ class Coolie
             if($status) self::run();
 
         } else {
-
-            $this->setUID();
+            
+            //The appropriate order of function calls is posix_setgid() first, posix_setuid() last.
             $this->setGID();
+            $this->setUID();
             Factory::getInstance()->run();
         }
 
