@@ -28,6 +28,11 @@ class Factory
 
 
     /**
+     * @var int
+     */
+    private $_lastWatchTime = 0;
+
+    /**
      * @var array
      */
     private $_signoList = [
@@ -170,7 +175,7 @@ class Factory
         $this->buildWorkshops();
 
         while(1) {
-            if(time() % $this->_watchInterval === 0) $this->watch();
+            $this->watch();
             sleep($this->_watchInterval);
         }
     }
@@ -180,7 +185,13 @@ class Factory
      */
     public function watch()
     {
+
+        if($this->_lastWatchTime + $this->_watchInterval > time())
+            return false;
+
         Coolie::printConsoleLog(posix_getpid(), __CLASS__, 'Watch start.');
+
+        $this->_lastWatchTime = time();
 
         $number = (int)Coolie::getInstance()->config->get('Factory.workshop_number');
 

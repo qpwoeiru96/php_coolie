@@ -100,17 +100,19 @@ class Coolie
         if(self::$loaded)
             trigger_error('coolie already loaded.', E_USER_ERROR);
 
-        
-        error_reporting(0);
-        ini_set('display_errors', 'Off');
-        date_default_timezone_set("Asia/Shanghai");
-
         spl_autoload_register([__CLASS__, 'autoload']);
 
         $instance          = self::getInstance();
         $instance->_config = new Config($configFile);
 
         define('COOLIE_DEBUG', (boolean)$instance->config->get('Coolie.debug'));
+
+        
+        error_reporting(0);
+        ini_set('display_errors', 'Off');
+        date_default_timezone_set("Asia/Shanghai");
+
+             
 
         if($instance->config->get('Coolie.check_requirement'))
             Requirement::check();
@@ -119,9 +121,7 @@ class Coolie
         $logStorager = $instance->config->get('Coolie.log_storager');
 
         if($logStorager)
-            $instance->_logger = new Logger($logStorager);
-
-        
+            $instance->_logger = new Logger($logStorager);        
 
         $instance->preload();
 
@@ -151,6 +151,8 @@ class Coolie
             if(!file_exists($file))
                 trigger_error('preload file ' . $file . ' is not exists,', E_USER_ERROR);
             include $file;
+
+            Coolie::printConsoleLog(posix_getpid(), __CLASS__, 'preload file ' . $file . ' successed.');
         }
     }
 
